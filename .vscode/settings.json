@@ -1,0 +1,4 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/project-a-baseline-rag/.venv/bin/python",
+  "python.analysis.useLibraryCodeForTypes": true
+}

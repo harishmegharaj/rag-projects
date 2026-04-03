@@ -1,0 +1,16 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY in .env}
+      API_KEY: ${API_KEY:-}
+      VIDEO_STORAGE_DIR: /data/videos
+      DATABASE_URL: sqlite:////data/app.sqlite3
+    volumes:
+      - vtx_data:/data
+    restart: unless-stopped
+
+volumes:
+  vtx_data:

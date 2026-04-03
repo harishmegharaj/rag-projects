@@ -1,0 +1,27 @@
+FROM python:3.11-slim-bookworm
+
+WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/opt/hf
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+COPY src/ ./src/
+COPY scripts/ ./scripts/
+COPY data/raw/ ./data/raw/
+
+RUN mkdir -p /opt/hf models/artifacts
+
+ARG BUILD_ID=local
+ENV BUILD_ID=${BUILD_ID}
+
+ENV HOST=0.0.0.0 PORT=8000
+EXPOSE 8000
+CMD ["python", "scripts/serve.py"]

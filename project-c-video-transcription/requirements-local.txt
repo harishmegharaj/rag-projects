@@ -1,0 +1,4 @@
+# Local speech-to-text (no OpenAI). Install on top of base deps:
+#   pip install -r requirements-local.txt
+-r requirements.txt
+faster-whisper>=1.0.0

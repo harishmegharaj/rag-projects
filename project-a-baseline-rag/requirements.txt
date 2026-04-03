@@ -1,0 +1,9 @@
+# Project A — baseline RAG (pin versions as you stabilize)
+python-dotenv>=1.0.0
+pypdf>=4.0.0
+chromadb>=0.4.0
+pinecone>=5.0.0
+sentence-transformers>=2.2.0
+langchain-text-splitters>=0.2.0
+openai>=1.0.0
+tiktoken>=0.5.0

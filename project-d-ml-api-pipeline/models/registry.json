@@ -1,0 +1,93 @@
+{
+  "active_model_path": "models/artifacts/classifier_v1-20260326T224026Z.joblib",
+  "active_version": "v1-20260326T224026Z",
+  "models": [
+    {
+      "version": "v1-20260325T225733Z",
+      "artifact": "models/artifacts/classifier_v1-20260325T225733Z.joblib",
+      "data_path": "data/raw/iris.csv",
+      "data_sha256": "fd07f0566e7fe8b6dd81d739fd8468643f15f326471e9bc02189da08c2a9113a",
+      "metrics": {
+        "accuracy_holdout": 0.9333333333333333,
+        "test_size": 0.2,
+        "random_state": 42
+      },
+      "library_versions": {
+        "sklearn": "1.8.0",
+        "numpy": "2.4.3",
+        "pandas": "3.0.1"
+      },
+      "git_sha": null,
+      "class_names": [
+        "setosa",
+        "versicolor",
+        "virginica"
+      ],
+      "feature_columns": [
+        "sepal_length",
+        "sepal_width",
+        "petal_length",
+        "petal_width"
+      ],
+      "trained_at_utc": "2026-03-25T22:57:33.245900+00:00"
+    },
+    {
+      "version": "v1-20260326T223920Z",
+      "artifact": "models/artifacts/classifier_v1-20260326T223920Z.joblib",
+      "data_path": "data/raw/iris.csv",
+      "data_sha256": "fd07f0566e7fe8b6dd81d739fd8468643f15f326471e9bc02189da08c2a9113a",
+      "metrics": {
+        "accuracy_holdout": 0.9333333333333333,
+        "test_size": 0.2,
+        "random_state": 42
+      },
+      "library_versions": {
+        "sklearn": "1.8.0",
+        "numpy": "2.4.3",
+        "pandas": "3.0.1"
+      },
+      "git_sha": null,
+      "class_names": [
+        "setosa",
+        "versicolor",
+        "virginica"
+      ],
+      "feature_columns": [
+        "sepal_length",
+        "sepal_width",
+        "petal_length",
+        "petal_width"
+      ],
+      "trained_at_utc": "2026-03-26T22:39:20.646306+00:00"
+    },
+    {
+      "version": "v1-20260326T224026Z",
+      "artifact": "models/artifacts/classifier_v1-20260326T224026Z.joblib",
+      "data_path": "data/raw/iris.csv",
+      "data_sha256": "fd07f0566e7fe8b6dd81d739fd8468643f15f326471e9bc02189da08c2a9113a",
+      "metrics": {
+        "accuracy_holdout": 0.9333333333333333,
+        "test_size": 0.2,
+        "random_state": 42
+      },
+      "library_versions": {
+        "sklearn": "1.8.0",
+        "numpy": "2.4.3",
+        "pandas": "3.0.1"
+      },
+      "git_sha": null,
+      "class_names": [
+        "setosa",
+        "versicolor",
+        "virginica"
+      ],
+      "feature_columns": [
+        "sepal_length",
+        "sepal_width",
+        "petal_length",
+        "petal_width"
+      ],
+      "trained_at_utc": "2026-03-26T22:40:26.440784+00:00"
+    }
+  ]
+}

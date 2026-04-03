@@ -1,0 +1,38 @@
+name: Project D — CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "project-d-ml-api-pipeline/**"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "project-d-ml-api-pipeline/**"
+
+defaults:
+  run:
+    working-directory: project-d-ml-api-pipeline
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: project-d-ml-api-pipeline/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ruff
+        run: ruff check src scripts tests
+
+      - name: Pytest
+        run: pytest

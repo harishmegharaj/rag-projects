@@ -1,0 +1,14 @@
+.venv
+__pycache__
+*.py[cod]
+.git
+.env
+vector_store
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.md
+tests
+models/intent_registry.json
+models/artifacts/*.joblib
+data/feedback.db

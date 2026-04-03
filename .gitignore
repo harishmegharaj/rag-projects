@@ -1,0 +1,11 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+*.sqlite3
+.chroma/
+**/data/raw/*
+!**/data/raw/.gitkeep
+!**/data/raw/SAMPLE.md
+vector_store/

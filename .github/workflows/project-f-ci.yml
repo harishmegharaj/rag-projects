@@ -1,0 +1,40 @@
+name: Project F — CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "project-f-document-summarization/**"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "project-f-document-summarization/**"
+
+defaults:
+  run:
+    working-directory: project-f-document-summarization
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: project-f-document-summarization/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ruff
+        run: ruff check src tests
+
+      - name: Pytest
+        run: pytest
+        env:
+          OPENAI_API_KEY: ""

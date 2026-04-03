@@ -1,0 +1,4 @@
+This is a tiny sample document for testing summarization uploads.
+
+Section one explains the purpose of the file.
+Section two notes that you can replace this with your own PDF, Markdown, or text.
