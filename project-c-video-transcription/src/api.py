@@ -2,25 +2,30 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import shutil
 import uuid
 from collections.abc import Generator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from starlette.websockets import WebSocketDisconnect
 
 from .config import api_key as config_api_key
-from .config import max_upload_bytes, video_storage_dir
+from .config import max_upload_bytes, project_root, video_storage_dir
 from .db import SessionLocal, init_db
 from .models import MediaIndex, Video, VideoStatus
+from .realtime_agent import realtime_agent, realtime_hub
+from .sales_insights import analyze_transcript_for_sales, analyze_transcript_for_sales_llm
 from .worker import worker_loop
 
 logger = logging.getLogger(__name__)
@@ -101,6 +106,14 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/v1/realtime/demo")
+async def realtime_demo_page() -> FileResponse:
+    page = project_root() / "docs" / "realtime-client.html"
+    if not page.is_file():
+        raise HTTPException(status_code=404, detail="Realtime demo page not found")
+    return FileResponse(page)
+
+
 @app.get("/ready")
 async def ready() -> dict:
     ffmpeg_ok = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
@@ -114,6 +127,44 @@ async def ready() -> dict:
 
 class IndexCreateBody(BaseModel):
     label: str | None = Field(default=None, max_length=256)
+
+
+class SalesInsightsBody(BaseModel):
+    transcript_text: str = Field(min_length=1)
+    top_k: int = Field(default=15, ge=1, le=50)
+    use_llm: bool = Field(default=False)
+    reasoning_model: str | None = Field(default=None, max_length=80)
+
+
+class RealtimeMessageBody(BaseModel):
+    session_id: str = Field(..., min_length=3, max_length=128)
+    message: str = Field(..., min_length=1, max_length=6000)
+
+
+def verify_ws_api_key(websocket: WebSocket) -> bool:
+    expected = config_api_key()
+    if not expected:
+        return True
+
+    token: str | None = websocket.headers.get("x-api-key")
+    if token:
+        token = token.strip()
+    if not token:
+        auth = websocket.headers.get("authorization")
+        if auth and auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    if not token:
+        token = (websocket.query_params.get("api_key") or "").strip() or None
+    return token == expected
+
+
+def _realtime_event(session_id: str, result: dict) -> dict:
+    return {
+        "type": "final",
+        "session_id": session_id,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        **result,
+    }
 
 
 @app.post("/v1/indexes", dependencies=[Depends(verify_api_key)])
@@ -324,3 +375,127 @@ def get_transcript(video_id: str, db: Db) -> dict:
     if conv:
         out["conversation_text"] = conv
     return out
+
+
+@app.post("/v1/nlp/sales-insights", dependencies=[Depends(verify_api_key)])
+def analyze_sales_text(body: SalesInsightsBody) -> dict:
+    if body.use_llm:
+        try:
+            return analyze_transcript_for_sales_llm(
+                body.transcript_text,
+                top_k=body.top_k,
+                reasoning_model=body.reasoning_model,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+    return analyze_transcript_for_sales(body.transcript_text, top_k=body.top_k)
+
+
+@app.get("/v1/videos/{video_id}/sales-insights", dependencies=[Depends(verify_api_key)])
+def get_video_sales_insights(
+    video_id: str,
+    db: Db,
+    top_k: int = 15,
+    use_llm: bool = False,
+    reasoning_model: str | None = None,
+) -> dict:
+    v = db.get(Video, video_id)
+    if v is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if v.status == VideoStatus.pending.value or v.status == VideoStatus.processing.value:
+        raise HTTPException(status_code=409, detail="Transcript not ready yet")
+    if v.status == VideoStatus.failed.value:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "video_id": v.id,
+                "status": v.status,
+                "error_message": v.error_message,
+            },
+        )
+    text = (v.transcript_text or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Transcript is empty")
+    if top_k < 1 or top_k > 50:
+        raise HTTPException(status_code=422, detail="top_k must be between 1 and 50")
+
+    if use_llm:
+        try:
+            out = analyze_transcript_for_sales_llm(
+                text,
+                top_k=top_k,
+                reasoning_model=reasoning_model,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+    else:
+        out = analyze_transcript_for_sales(text, top_k=top_k)
+
+    out["video_id"] = v.id
+    out["index_id"] = v.index_id
+    out["model_used_for_transcript"] = v.whisper_model
+    out["transcript_language"] = v.transcript_language
+    return out
+
+
+@app.post("/v1/realtime/messages", dependencies=[Depends(verify_api_key)])
+async def realtime_message(body: RealtimeMessageBody) -> dict:
+    result = realtime_agent.respond(body.session_id, body.message.strip())
+    event = _realtime_event(body.session_id, result)
+    await realtime_hub.publish(body.session_id, event)
+    return event
+
+
+@app.get("/v1/realtime/sse/{session_id}", dependencies=[Depends(verify_api_key)])
+async def realtime_sse(session_id: str):
+    sid = session_id.strip()
+    if len(sid) < 3:
+        raise HTTPException(status_code=422, detail="Invalid session_id")
+
+    async def event_gen():
+        q = realtime_hub.subscribe(sid, maxsize=200)
+        hello = {"type": "ack", "session_id": sid, "transport": "sse"}
+        yield f"data: {json.dumps(hello)}\\n\\n"
+        try:
+            while True:
+                ev = await q.get()
+                yield f"data: {json.dumps(ev)}\\n\\n"
+        finally:
+            realtime_hub.unsubscribe(sid, q)
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+@app.websocket("/v1/realtime/ws")
+async def realtime_ws(websocket: WebSocket) -> None:
+    if not verify_ws_api_key(websocket):
+        await websocket.close(code=1008, reason="Invalid or missing API key")
+        return
+
+    await websocket.accept()
+    session_id = (websocket.query_params.get("session_id") or "").strip()
+    if len(session_id) < 3:
+        await websocket.send_json({"type": "error", "error": "session_id query param required"})
+        await websocket.close(code=1008)
+        return
+
+    await websocket.send_json({"type": "ack", "session_id": session_id})
+
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            text = str(msg.get("message", "")).strip()
+            if not text:
+                await websocket.send_json({"type": "error", "error": "message is required"})
+                continue
+            if len(text) > 6000:
+                await websocket.send_json({"type": "error", "error": "message exceeds max_length", "max_length": 6000})
+                continue
+
+            await websocket.send_json({"type": "status", "stage": "agent_started"})
+            result = realtime_agent.respond(session_id, text)
+            event = _realtime_event(session_id, result)
+            await websocket.send_json(event)
+            await realtime_hub.publish(session_id, event)
+    except WebSocketDisconnect:
+        return

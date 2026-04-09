@@ -72,6 +72,12 @@ python scripts/serve.py
 - **Ready (ffmpeg):** `GET http://localhost:8000/ready`
 - **Docs:** `http://localhost:8000/docs`
 
+Run tests (auto-repairs local `.venv` if needed):
+
+```bash
+make test-sales
+```
+
 ---
 
 ## Configuration
@@ -161,6 +167,112 @@ Each segment (when diarized) includes **`start`**, **`end`** (seconds), **`text`
 
 - **`409`** while status is `pending` or `processing`.
 - **`502`** if status is `failed` (body includes `error_message`).
+
+### Analyze sales pitch from transcript
+
+Use NLP on transcript text to extract sales keywords, detect buying/objection signals, and generate a 4-phase sales action plan.
+
+1) Analyze raw transcript text directly:
+
+`POST /v1/nlp/sales-insights`
+
+```json
+{
+   "transcript_text": "...meeting transcript text...",
+   "top_k": 15,
+   "use_llm": true,
+   "reasoning_model": "gpt-4.1-mini"
+}
+```
+
+Set `use_llm=true` to run reasoning/plan generation with OpenAI models (`gpt-4.1-mini` or `gpt-4.1`).
+If `use_llm=false` (default), the API uses deterministic local heuristics.
+
+2) Analyze a video that already finished transcription:
+
+`GET /v1/videos/{video_id}/sales-insights?top_k=15&use_llm=true&reasoning_model=gpt-4.1`
+
+Response includes:
+
+- `keywords` with frequency + score
+- `signals` buckets (`pain_points`, `business_goals`, `objections`, `buying_signals`)
+- `sales_plan` (Discovery, Value Positioning, Objection Handling, Close Plan)
+- `recommended_models` for transcription + reasoning
+
+### Recommended models for this use case
+
+- **Best for speaker-aware sales calls:** `deepgram:nova-2`
+- **Best neutral transcription baseline:** `openai:whisper-1`
+- **Best quality/cost for transcript reasoning:** `gpt-4.1-mini`
+- **Best overall reasoning quality:** `gpt-4.1`
+- **Best on-prem/private fallback:** `llama-3.1-8b-instruct` (or larger)
+
+### Realtime demo flow (WS + SSE + relation memory)
+
+```mermaid
+flowchart LR
+   USER[Demo User / App]
+   OBS[Observer UI]
+
+   WS[WebSocket\n/v1/realtime/ws]
+   HTTP[HTTP\nPOST /v1/realtime/messages]
+   SSE[SSE\n/v1/realtime/sse/:session_id]
+
+   ING[Ingestion + Canonicalization]
+   VEC[(Session Vector Memory)]
+   REL[(Relation Graph)]
+   AG[Agent Planner + Tools]
+   OUT[Response Composer]
+
+   USER -->|chat message| WS
+   USER -->|optional rest message| HTTP
+   WS --> ING
+   HTTP --> ING
+
+   ING --> VEC
+   ING --> REL
+   VEC --> AG
+   REL --> AG
+   AG --> OUT
+
+   OUT -->|final response| WS
+   OUT -->|broadcast event| SSE
+   SSE --> OBS
+```
+
+#### Realtime demo steps
+
+1. Start API:
+
+```bash
+python scripts/serve.py
+```
+
+2. Open browser demo client:
+
+```text
+http://127.0.0.1:8000/v1/realtime/demo
+```
+
+Inside the page:
+
+- Use **Run 5-message Script** for a quick realistic demo.
+- Use **Run 50-message Stress Script** to show rolling relation/window behavior at scale.
+- Use live dashboard panels to explain results clearly: **Latest Answer**, **Tools Used**, **Top Topics**, **Related Messages**, **Relation Edges**, and event counters.
+
+3. Optional terminal SSE observer:
+
+```bash
+curl -N "http://127.0.0.1:8000/v1/realtime/sse/demo-session"
+```
+
+4. Optional terminal message push:
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8000/v1/realtime/messages" \
+   -H "content-type: application/json" \
+   -d '{"session_id":"demo-session","message":"Need faster onboarding and lower cost"}'
+```
 
 ### Index introspection
 

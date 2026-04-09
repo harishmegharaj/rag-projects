@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Video Transcription Realtime Demo Client</title>
+    <style>
+      :root {
+        --bg: #f4f7fb;
+        --panel: #ffffff;
+        --text: #142033;
+        --muted: #5b697d;
+        --line: #d8e1ee;
+        --accent: #0f6fff;
+        --good: #157a3d;
+        --warn: #b45600;
+        --bad: #b42318;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", Tahoma, sans-serif;
+        background: linear-gradient(180deg, #f6f9ff 0%, #eef3fb 100%);
+        color: var(--text);
+      }
+      .wrap { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 6px 18px rgba(8, 33, 71, 0.08);
+      }
+      h1 { margin: 0 0 12px; font-size: 24px; }
+      .hint { margin: 0 0 14px; color: var(--muted); font-size: 13px; }
+      .grid { display: grid; gap: 10px; grid-template-columns: 1fr; }
+      @media (min-width: 920px) { .grid { grid-template-columns: repeat(3, 1fr); } }
+      label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--muted); }
+      input, textarea, button {
+        width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font: inherit;
+      }
+      textarea { min-height: 120px; resize: vertical; }
+      .row { display: grid; gap: 10px; grid-template-columns: 1fr; margin-top: 10px; }
+      @media (min-width: 920px) { .row { grid-template-columns: repeat(4, 1fr); } }
+      button { background: var(--accent); color: #fff; border: none; cursor: pointer; }
+      button[disabled] { opacity: 0.5; cursor: not-allowed; }
+      #disconnectBtn, #sseStopBtn { background: #677489; }
+      #clearBtn { background: #2f3d52; }
+      #runScriptBtn { background: #7a3cff; }
+      #runStressBtn { background: #c43d8c; }
+      #loadSampleBtn { background: #0e8f74; }
+      #previewSampleBtn { background: #a35a16; }
+      #generateSampleBtn { background: #0b62c7; }
+      .status { margin: 12px 0 0; font-size: 14px; }
+      .status b { padding: 3px 8px; border-radius: 999px; color: #fff; }
+      .s-disconnected b { background: var(--bad); }
+      .s-connecting b { background: var(--warn); }
+      .s-connected b { background: var(--good); }
+      .log {
+        margin-top: 12px;
+        background: #0d1b2a;
+        color: #e2ebf7;
+        border-radius: 8px;
+        padding: 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 420px;
+        overflow: auto;
+      }
+      .split { display: grid; gap: 12px; grid-template-columns: 1fr; }
+      @media (min-width: 920px) { .split { grid-template-columns: 1fr 1fr; } }
+      .stats {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: repeat(2, 1fr);
+        margin-top: 12px;
+      }
+      @media (min-width: 920px) { .stats { grid-template-columns: repeat(5, 1fr); } }
+      .stat {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px;
+        background: #fbfdff;
+      }
+      .stat .k {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 6px;
+      }
+      .stat .v {
+        font-weight: 700;
+        font-size: 16px;
+      }
+      .panel-grid {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: 1fr;
+        margin-top: 12px;
+      }
+      @media (min-width: 920px) { .panel-grid { grid-template-columns: 1fr 1fr; } }
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fbfdff;
+        padding: 10px;
+      }
+      .panel h4 { margin: 0 0 8px; }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .chip {
+        padding: 4px 8px;
+        border-radius: 999px;
+        border: 1px solid #bfd2ef;
+        background: #edf4ff;
+        font-size: 12px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      th, td {
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        padding: 6px 4px;
+        vertical-align: top;
+      }
+      .sample-grid {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: 1fr;
+        margin-top: 12px;
+      }
+      @media (min-width: 920px) { .sample-grid { grid-template-columns: 1fr 1fr; } }
+      .sample-box textarea {
+        min-height: 170px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+        background: #f8fbff;
+      }
+      .models-list {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 13px;
+      }
+      .models-list li {
+        margin: 6px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>Realtime WS + SSE Demo (Project C)</h1>
+        <p class="hint">Single-tab demo for realtime ingestion and fan-out: WebSocket chat, HTTP message POST, and SSE observer stream.</p>
+
+        <div class="grid">
+          <div>
+            <label for="sessionId">Session ID</label>
+            <input id="sessionId" value="demo-session" />
+          </div>
+          <div>
+            <label for="apiKey">API key (optional)</label>
+            <input id="apiKey" placeholder="If API_KEY is enabled" />
+          </div>
+          <div>
+            <label for="baseUrl">Base URL</label>
+            <input id="baseUrl" value="http://127.0.0.1:8000" />
+          </div>
+        </div>
+
+        <div style="margin-top: 10px;">
+          <label for="message">Message</label>
+          <textarea id="message">We need faster onboarding, lower cost, and a clear implementation plan.</textarea>
+        </div>
+
+        <div class="split">
+          <div>
+            <h3>WebSocket Chat</h3>
+            <div class="row">
+              <button id="connectBtn" type="button">Connect WS</button>
+              <button id="sendBtn" type="button" disabled>Send via WS</button>
+              <button id="disconnectBtn" type="button" disabled>Disconnect WS</button>
+              <button id="postBtn" type="button">Send via HTTP POST</button>
+            </div>
+            <div class="row">
+              <button id="runScriptBtn" type="button">Run 5-message Script</button>
+              <button id="runStressBtn" type="button">Run 50-message Stress Script</button>
+              <button id="loadSampleBtn" type="button">Load Sample Input</button>
+              <button id="previewSampleBtn" type="button">Preview Sample Output</button>
+              <button id="generateSampleBtn" type="button">Generate Live Output</button>
+            </div>
+            <div id="wsStatus" class="status s-disconnected">WS Status: <b>disconnected</b></div>
+          </div>
+
+          <div>
+            <h3>SSE Observer</h3>
+            <div class="row">
+              <button id="sseStartBtn" type="button">Start SSE</button>
+              <button id="sseStopBtn" type="button" disabled>Stop SSE</button>
+              <button id="clearBtn" type="button">Clear Log</button>
+            </div>
+            <div id="sseStatus" class="status s-disconnected">SSE Status: <b>disconnected</b></div>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="stat"><span class="k">Messages Sent</span><span class="v" id="msgSent">0</span></div>
+          <div class="stat"><span class="k">WS Final Events</span><span class="v" id="wsFinalCount">0</span></div>
+          <div class="stat"><span class="k">SSE Events</span><span class="v" id="sseEventCount">0</span></div>
+          <div class="stat"><span class="k">HTTP Final Events</span><span class="v" id="httpFinalCount">0</span></div>
+          <div class="stat"><span class="k">Last Update</span><span class="v mono" id="lastTs">-</span></div>
+        </div>
+
+        <div class="panel-grid">
+          <div class="panel">
+            <h4>Latest Answer</h4>
+            <div id="currentAnswer" class="mono">No final response yet.</div>
+          </div>
+          <div class="panel">
+            <h4>Action Plan</h4>
+            <ol id="actionPlanList" class="mono"></ol>
+          </div>
+        </div>
+
+        <div class="panel-grid">
+          <div class="panel">
+            <h4>Tools Used</h4>
+            <div id="toolsUsed" class="chips"></div>
+            <h4 style="margin-top: 10px;">Top Topics</h4>
+            <div id="topicsUsed" class="chips"></div>
+          </div>
+          <div class="panel">
+            <h4>Related Messages (Top Semantic)</h4>
+            <table>
+              <thead>
+                <tr><th>Score</th><th>Role</th><th>Text</th></tr>
+              </thead>
+              <tbody id="relatedTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h4>Relation Edges (Top)</h4>
+          <table>
+            <thead>
+              <tr><th>Weight</th><th>Reason</th><th>From</th><th>To</th></tr>
+            </thead>
+            <tbody id="relationsTableBody"></tbody>
+          </table>
+        </div>
+
+        <div class="panel">
+          <h4>Models Used / Recommended</h4>
+          <ul class="models-list">
+            <li><b>Current demo implementation:</b> Lightweight in-memory hashed embedding + synonym normalization + deterministic tool-based agent response (fast local demo mode).</li>
+            <li><b>Best transcription for speaker-aware sales calls:</b> <code>deepgram:nova-2</code> (diarization + turn-level timestamps).</li>
+            <li><b>Best transcription baseline:</b> <code>openai:whisper-1</code> (strong general speech accuracy).</li>
+            <li><b>Best quality/cost reasoning for transcript insights:</b> <code>gpt-4.1-mini</code>.</li>
+            <li><b>Best reasoning quality for executive outputs:</b> <code>gpt-4.1</code>.</li>
+            <li><b>Privacy-first local fallback:</b> <code>llama-3.1-8b-instruct</code> or larger (on suitable hardware).</li>
+          </ul>
+        </div>
+
+        <div class="sample-grid">
+          <div class="panel sample-box">
+            <h4>Demo Input (Sales Transcript Message)</h4>
+            <textarea id="sampleInput" readonly></textarea>
+          </div>
+          <div class="panel sample-box">
+            <h4>Demo Output (Expected Structured Response)</h4>
+            <textarea id="sampleOutput" readonly></textarea>
+          </div>
+        </div>
+
+        <div id="log" class="log"></div>
+      </div>
+    </div>
+
+    <script>
+      let ws = null;
+      let es = null;
+      let scriptRunning = false;
+
+      const demoScriptMessages = [
+        "We need faster onboarding for enterprise clients.",
+        "Budget is tight, so pricing and ROI proof are critical.",
+        "Security review is mandatory before procurement approval.",
+        "Can we run a pilot with clear success metrics this month?",
+        "Please propose next steps and owners for close planning.",
+      ];
+
+      const sampleInputMessage =
+        "[00:00] AE: Thanks for joining. In one minute, what are the top priorities this quarter?\n" +
+        "[00:06] Prospect: Onboarding is slow, our renewal risk is rising, and support cost is too high.\n" +
+        "[00:13] AE: What does success look like in the next 90 days?\n" +
+        "[00:17] Prospect: Reduce onboarding time by 30 percent, improve retention, and show clear ROI to leadership.\n" +
+        "[00:27] AE: Any constraints we should design around?\n" +
+        "[00:31] Prospect: Budget is tight, security review is mandatory, and Salesforce integration is required in phase one.\n" +
+        "[00:42] AE: Who is in the decision process?\n" +
+        "[00:45] Prospect: VP Sales, IT Security, and Procurement.\n" +
+        "[00:50] AE: Would a pilot with metrics help de-risk this?\n" +
+        "[00:54] Prospect: Yes. Send proposal, pilot timeline, and next steps by Friday.";
+
+      const sampleOutputPayload = {
+        type: "final",
+        session_id: "demo-session",
+        ts: "2026-04-09T22:42:23.880584+00:00",
+        answer:
+          "Realtime analysis complete.\nDominant themes (last 50 messages): onboarding, cost, retention, security, integration, pilot.\nClosest related message: Prospect: Budget is tight, security review is mandatory, and Salesforce integration is required in phase one.\nI can now generate a structured action plan if you ask for 'next steps'.",
+        tools_used: ["semantic_search", "relation_graph", "topic_window", "action_plan"],
+        observations: {
+          semantic_search: [
+            {
+              score: 1.0,
+              role: "user",
+              text: "Prospect: Onboarding is slow, renewal risk is rising, and support cost is too high.",
+            },
+            {
+              score: 0.78,
+              role: "user",
+              text: "Prospect: Budget is tight, security review is mandatory, and Salesforce integration is required in phase one.",
+            },
+            {
+              score: 0.69,
+              role: "user",
+              text: "Prospect: Yes. Send proposal, pilot timeline, and next steps by Friday.",
+            },
+          ],
+          relation_graph: [
+            { weight: 0.89, reason: "semantic", from: "m01a", to: "m04d" },
+            { weight: 0.84, reason: "semantic", from: "m07b", to: "m09e" },
+            { weight: 0.76, reason: "shared_entity:Salesforce", from: "m04d", to: "m08c" },
+          ],
+          topic_window: ["onboarding", "cost", "retention", "security", "integration", "pilot"],
+          action_plan: [
+            "Confirm pilot scope mapped to three KPIs: onboarding time, retention trend, and support cost per account.",
+            "Prepare security + Salesforce integration checklist for IT review before procurement handoff.",
+            "Send proposal with owners, timeline, and Friday follow-up meeting invite.",
+          ],
+        },
+      };
+
+      const $ = (id) => document.getElementById(id);
+      const stats = {
+        msgSent: 0,
+        wsFinalCount: 0,
+        sseEventCount: 0,
+        httpFinalCount: 0,
+      };
+      const el = {
+        sessionId: $("sessionId"),
+        apiKey: $("apiKey"),
+        baseUrl: $("baseUrl"),
+        message: $("message"),
+        connectBtn: $("connectBtn"),
+        sendBtn: $("sendBtn"),
+        disconnectBtn: $("disconnectBtn"),
+        postBtn: $("postBtn"),
+        runScriptBtn: $("runScriptBtn"),
+        runStressBtn: $("runStressBtn"),
+        loadSampleBtn: $("loadSampleBtn"),
+        previewSampleBtn: $("previewSampleBtn"),
+        generateSampleBtn: $("generateSampleBtn"),
+        sseStartBtn: $("sseStartBtn"),
+        sseStopBtn: $("sseStopBtn"),
+        clearBtn: $("clearBtn"),
+        wsStatus: $("wsStatus"),
+        sseStatus: $("sseStatus"),
+        log: $("log"),
+        msgSent: $("msgSent"),
+        wsFinalCount: $("wsFinalCount"),
+        sseEventCount: $("sseEventCount"),
+        httpFinalCount: $("httpFinalCount"),
+        lastTs: $("lastTs"),
+        currentAnswer: $("currentAnswer"),
+        toolsUsed: $("toolsUsed"),
+        topicsUsed: $("topicsUsed"),
+        relatedTableBody: $("relatedTableBody"),
+        relationsTableBody: $("relationsTableBody"),
+        actionPlanList: $("actionPlanList"),
+        sampleInput: $("sampleInput"),
+        sampleOutput: $("sampleOutput"),
+      };
+
+      function syncStats() {
+        el.msgSent.textContent = String(stats.msgSent);
+        el.wsFinalCount.textContent = String(stats.wsFinalCount);
+        el.sseEventCount.textContent = String(stats.sseEventCount);
+        el.httpFinalCount.textContent = String(stats.httpFinalCount);
+      }
+
+      function clearNode(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function addChip(node, text) {
+        const span = document.createElement("span");
+        span.className = "chip";
+        span.textContent = text;
+        node.appendChild(span);
+      }
+
+      function renderFinalPayload(payload, source) {
+        if (!payload || payload.type !== "final") return;
+
+        if (source === "ws") stats.wsFinalCount += 1;
+        if (source === "sse") stats.sseEventCount += 1;
+        if (source === "http") stats.httpFinalCount += 1;
+        syncStats();
+
+        const observations = payload.observations || {};
+        el.lastTs.textContent = (payload.ts || "-").replace("T", " ").slice(0, 19);
+        el.currentAnswer.textContent = payload.answer || "No answer";
+
+        clearNode(el.toolsUsed);
+        for (const t of (payload.tools_used || [])) addChip(el.toolsUsed, String(t));
+
+        clearNode(el.topicsUsed);
+        for (const t of (observations.topic_window || [])) addChip(el.topicsUsed, String(t));
+
+        clearNode(el.relatedTableBody);
+        for (const item of (observations.semantic_search || []).slice(0, 6)) {
+          const tr = document.createElement("tr");
+          const tdScore = document.createElement("td");
+          const tdRole = document.createElement("td");
+          const tdText = document.createElement("td");
+          tdScore.textContent = String(item.score ?? "-");
+          tdRole.textContent = String(item.role ?? "-");
+          tdText.textContent = String(item.text ?? "").slice(0, 180);
+          tr.appendChild(tdScore);
+          tr.appendChild(tdRole);
+          tr.appendChild(tdText);
+          el.relatedTableBody.appendChild(tr);
+        }
+
+        clearNode(el.relationsTableBody);
+        for (const edge of (observations.relation_graph || []).slice(0, 10)) {
+          const tr = document.createElement("tr");
+          const tdWeight = document.createElement("td");
+          const tdReason = document.createElement("td");
+          const tdFrom = document.createElement("td");
+          const tdTo = document.createElement("td");
+          tdWeight.textContent = String(edge.weight ?? "-");
+          tdReason.textContent = String(edge.reason ?? "-");
+          tdFrom.textContent = String(edge.from ?? "-").slice(0, 8);
+          tdTo.textContent = String(edge.to ?? "-").slice(0, 8);
+          tr.appendChild(tdWeight);
+          tr.appendChild(tdReason);
+          tr.appendChild(tdFrom);
+          tr.appendChild(tdTo);
+          el.relationsTableBody.appendChild(tr);
+        }
+
+        clearNode(el.actionPlanList);
+        for (const step of (observations.action_plan || [])) {
+          const li = document.createElement("li");
+          li.textContent = String(step);
+          el.actionPlanList.appendChild(li);
+        }
+      }
+
+      function stamp() {
+        return new Date().toISOString().replace("T", " ").slice(0, 19);
+      }
+
+      function logLine(text) {
+        el.log.textContent += `[${stamp()}] ${text}\n`;
+        el.log.scrollTop = el.log.scrollHeight;
+      }
+
+      function setState(node, prefix, state) {
+        node.className = `status s-${state}`;
+        node.innerHTML = `${prefix}: <b>${state}</b>`;
+      }
+
+      function normalizeBase(base) {
+        return base.replace(/\/$/, "");
+      }
+
+      function wsUrl(base, sessionId, apiKey) {
+        const b = normalizeBase(base).replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+        const u = new URL(`${b}/v1/realtime/ws`);
+        u.searchParams.set("session_id", sessionId);
+        if (apiKey) u.searchParams.set("api_key", apiKey);
+        return u.toString();
+      }
+
+      function sseUrl(base, sessionId, apiKey) {
+        const u = new URL(`${normalizeBase(base)}/v1/realtime/sse/${encodeURIComponent(sessionId)}`);
+        if (apiKey) u.searchParams.set("api_key", apiKey);
+        return u.toString();
+      }
+
+      function setButtons() {
+        const wsConnected = ws && ws.readyState === WebSocket.OPEN;
+        const wsConnecting = ws && ws.readyState === WebSocket.CONNECTING;
+        el.connectBtn.disabled = wsConnected || wsConnecting;
+        el.sendBtn.disabled = !wsConnected;
+        el.disconnectBtn.disabled = !wsConnected && !wsConnecting;
+        el.runScriptBtn.disabled = scriptRunning;
+        el.runStressBtn.disabled = scriptRunning;
+
+        const sseConnected = !!es;
+        el.sseStartBtn.disabled = sseConnected;
+        el.sseStopBtn.disabled = !sseConnected;
+      }
+
+      function connectWS() {
+        if (ws) return;
+        const sessionId = el.sessionId.value.trim();
+        const apiKey = el.apiKey.value.trim();
+        const base = el.baseUrl.value.trim();
+        if (!sessionId) {
+          logLine("ERROR missing session_id");
+          return;
+        }
+
+        const url = wsUrl(base, sessionId, apiKey);
+        setState(el.wsStatus, "WS Status", "connecting");
+        logLine(`WS CONNECT ${url}`);
+        ws = new WebSocket(url);
+        setButtons();
+
+        ws.onopen = () => {
+          setState(el.wsStatus, "WS Status", "connected");
+          setButtons();
+          logLine("WS CONNECTED");
+        };
+
+        ws.onmessage = (event) => {
+          logLine(`WS RECV ${event.data}`);
+          try {
+            const payload = JSON.parse(event.data);
+            renderFinalPayload(payload, "ws");
+          } catch {
+            // keep raw log only
+          }
+        };
+
+        ws.onerror = () => {
+          logLine("WS ERROR transport error");
+        };
+
+        ws.onclose = (event) => {
+          logLine(`WS CLOSED code=${event.code} reason=${event.reason || "-"}`);
+          ws = null;
+          setState(el.wsStatus, "WS Status", "disconnected");
+          setButtons();
+        };
+      }
+
+      function sendWS() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          logLine("ERROR websocket is not connected");
+          return;
+        }
+        const text = el.message.value.trim();
+        if (!text) {
+          logLine("ERROR message is empty");
+          return;
+        }
+        const payload = { message: text };
+        stats.msgSent += 1;
+        syncStats();
+        ws.send(JSON.stringify(payload));
+        logLine(`WS SEND ${JSON.stringify(payload)}`);
+      }
+
+      function disconnectWS() {
+        if (!ws) return;
+        ws.close(1000, "client closed");
+      }
+
+      async function sendPOSTWithMessage(text) {
+        const sessionId = el.sessionId.value.trim();
+        const apiKey = el.apiKey.value.trim();
+        const base = normalizeBase(el.baseUrl.value.trim());
+
+        if (!sessionId || !text) {
+          logLine("ERROR session_id and message are required");
+          return;
+        }
+
+        const headers = { "content-type": "application/json" };
+        if (apiKey) headers["x-api-key"] = apiKey;
+
+        const body = { session_id: sessionId, message: text };
+        stats.msgSent += 1;
+        syncStats();
+        logLine(`HTTP POST /v1/realtime/messages ${JSON.stringify(body)}`);
+
+        const resp = await fetch(`${base}/v1/realtime/messages`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        });
+
+        const data = await resp.text();
+        logLine(`HTTP ${resp.status} ${data}`);
+        try {
+          const payload = JSON.parse(data);
+          renderFinalPayload(payload, "http");
+        } catch {
+          // keep raw log only
+        }
+      }
+
+      async function sendPOST() {
+        const text = el.message.value.trim();
+        await sendPOSTWithMessage(text);
+      }
+
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      async function runScriptSequence() {
+        if (scriptRunning) return;
+        scriptRunning = true;
+        setButtons();
+        logLine("SCRIPT START 5-message sequence");
+        try {
+          for (const msg of demoScriptMessages) {
+            el.message.value = msg;
+            await sendPOSTWithMessage(msg);
+            await sleep(850);
+          }
+          logLine("SCRIPT DONE");
+        } catch (err) {
+          logLine(`SCRIPT ERROR ${String(err)}`);
+        } finally {
+          scriptRunning = false;
+          setButtons();
+        }
+      }
+
+      function buildStressMessages() {
+        const themes = [
+          "onboarding speed",
+          "pricing pressure",
+          "security review",
+          "integration timeline",
+          "pilot success metrics",
+          "procurement approval",
+          "renewal confidence",
+          "stakeholder alignment",
+        ];
+        const msgs = [];
+        for (let i = 1; i <= 50; i += 1) {
+          const t1 = themes[i % themes.length];
+          const t2 = themes[(i + 3) % themes.length];
+          msgs.push(
+            `Message ${i}: We discussed ${t1} and ${t2}; please capture blockers, owner, and next-step date for Q${(i % 4) + 1}.`
+          );
+        }
+        return msgs;
+      }
+
+      async function runStressSequence() {
+        if (scriptRunning) return;
+        scriptRunning = true;
+        setButtons();
+        const stressMessages = buildStressMessages();
+        logLine("STRESS START 50-message sequence");
+        try {
+          for (const msg of stressMessages) {
+            el.message.value = msg;
+            await sendPOSTWithMessage(msg);
+            await sleep(180);
+          }
+          logLine("STRESS DONE");
+        } catch (err) {
+          logLine(`STRESS ERROR ${String(err)}`);
+        } finally {
+          scriptRunning = false;
+          setButtons();
+        }
+      }
+
+      function loadSampleInput() {
+        el.message.value = sampleInputMessage;
+        el.sampleInput.value = sampleInputMessage;
+        logLine("Loaded sample input message into compose box.");
+      }
+
+      function previewSampleOutput() {
+        el.sampleOutput.value = JSON.stringify(sampleOutputPayload, null, 2);
+        renderFinalPayload(sampleOutputPayload, "http");
+        logLine("Rendered sample output into dashboard panels.");
+        el.sampleOutput.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+
+      async function generateLiveSampleOutput() {
+        const original = el.message.value;
+        try {
+          el.message.value = sampleInputMessage;
+
+          const sessionId = el.sessionId.value.trim();
+          const apiKey = el.apiKey.value.trim();
+          const base = normalizeBase(el.baseUrl.value.trim());
+          const headers = { "content-type": "application/json" };
+          if (apiKey) headers["x-api-key"] = apiKey;
+
+          stats.msgSent += 1;
+          syncStats();
+          logLine("Generating live output using sample input...");
+
+          const resp = await fetch(`${base}/v1/realtime/messages`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ session_id: sessionId, message: sampleInputMessage }),
+          });
+
+          const text = await resp.text();
+          try {
+            const payload = JSON.parse(text);
+            el.sampleOutput.value = JSON.stringify(payload, null, 2);
+            renderFinalPayload(payload, "http");
+            logLine("Generated live sample output from backend.");
+          } catch {
+            el.sampleOutput.value = text;
+            logLine("Live output returned non-JSON response.");
+          }
+        } catch (err) {
+          logLine(`LIVE SAMPLE ERROR ${String(err)}`);
+        } finally {
+          el.message.value = original;
+          el.sampleOutput.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }
+
+      function startSSE() {
+        if (es) return;
+        const sessionId = el.sessionId.value.trim();
+        const apiKey = el.apiKey.value.trim();
+        const base = el.baseUrl.value.trim();
+        if (!sessionId) {
+          logLine("ERROR missing session_id for SSE");
+          return;
+        }
+
+        const url = sseUrl(base, sessionId, apiKey);
+        logLine(`SSE CONNECT ${url}`);
+        es = new EventSource(url);
+        setState(el.sseStatus, "SSE Status", "connecting");
+        setButtons();
+
+        es.onopen = () => {
+          setState(el.sseStatus, "SSE Status", "connected");
+          logLine("SSE CONNECTED");
+        };
+
+        es.onmessage = (event) => {
+          logLine(`SSE EVENT ${event.data}`);
+          try {
+            const payload = JSON.parse(event.data);
+            renderFinalPayload(payload, "sse");
+          } catch {
+            // keep raw log only
+          }
+        };
+
+        es.onerror = () => {
+          logLine("SSE ERROR disconnected by server or network");
+          stopSSE();
+        };
+      }
+
+      function stopSSE() {
+        if (!es) return;
+        es.close();
+        es = null;
+        setState(el.sseStatus, "SSE Status", "disconnected");
+        setButtons();
+      }
+
+      el.connectBtn.addEventListener("click", connectWS);
+      el.sendBtn.addEventListener("click", sendWS);
+      el.disconnectBtn.addEventListener("click", disconnectWS);
+      el.postBtn.addEventListener("click", sendPOST);
+      el.runScriptBtn.addEventListener("click", runScriptSequence);
+      el.runStressBtn.addEventListener("click", runStressSequence);
+      el.loadSampleBtn.addEventListener("click", loadSampleInput);
+      el.previewSampleBtn.addEventListener("click", previewSampleOutput);
+      el.generateSampleBtn.addEventListener("click", generateLiveSampleOutput);
+      el.sseStartBtn.addEventListener("click", startSSE);
+      el.sseStopBtn.addEventListener("click", stopSSE);
+      el.clearBtn.addEventListener("click", () => {
+        el.log.textContent = "";
+      });
+
+      setState(el.wsStatus, "WS Status", "disconnected");
+      setState(el.sseStatus, "SSE Status", "disconnected");
+      setButtons();
+      syncStats();
+      el.sampleInput.value = sampleInputMessage;
+      el.sampleOutput.value = JSON.stringify(sampleOutputPayload, null, 2);
+      logLine("Ready");
+    </script>
+  </body>
+</html>

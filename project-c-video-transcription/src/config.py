@@ -104,3 +104,17 @@ def local_whisper_device() -> str:
 def local_whisper_compute_type() -> str:
     """e.g. int8 (CPU), float16 (GPU cuda), int8_float16"""
     return os.getenv("LOCAL_WHISPER_COMPUTE_TYPE", "int8").strip() or "int8"
+
+
+def sales_reasoning_default_model() -> str:
+    """LLM used for transcript reasoning/plan generation when use_llm=true."""
+    return os.getenv("SALES_REASONING_MODEL", "gpt-4.1-mini").strip() or "gpt-4.1-mini"
+
+
+def sales_reasoning_temperature() -> float:
+    raw = os.getenv("SALES_REASONING_TEMPERATURE", "0.2").strip()
+    try:
+        t = float(raw)
+    except ValueError:
+        return 0.2
+    return max(0.0, min(t, 2.0))
