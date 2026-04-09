@@ -7,3 +7,4 @@ vector_store/
 .mypy_cache/
 .ruff_cache/
 eval_reports/
+logs/

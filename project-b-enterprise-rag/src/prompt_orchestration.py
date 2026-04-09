@@ -203,6 +203,7 @@ def run_langchain_pipeline(
     vector_k: int,
     fusion_top_n: int,
     rerank_top_n: int,
+    callbacks: list | None = None,
 ) -> dict[str, Any]:
     chain = build_chain()
     state: PipelineState = {
@@ -220,7 +221,7 @@ def run_langchain_pipeline(
         "error_detail": None,
         "retrieved": [],
     }
-    out = chain.invoke(state)
+    out = chain.invoke(state, config={"callbacks": callbacks or []})
     if out.get("redacted_question"):
         # Keep retrieval query logging in one place for consistency with existing output.
         pass

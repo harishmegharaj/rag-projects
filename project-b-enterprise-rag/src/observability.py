@@ -68,6 +68,9 @@ def setup_logging() -> None:
                 rid = getattr(record, "request_id", None)
                 if rid:
                     payload["request_id"] = rid
+                lf_tid = getattr(record, "langfuse_trace_id", None)
+                if lf_tid:
+                    payload["langfuse_trace_id"] = lf_tid
                 return json.dumps(payload, ensure_ascii=False)
 
         handler.setFormatter(JsonFormatter())
@@ -76,6 +79,53 @@ def setup_logging() -> None:
     root.handlers.clear()
     root.addHandler(handler)
     setattr(root, "_enterprise_rag_logging_configured", True)
+
+
+def setup_langsmith() -> None:
+    """
+    LangSmith tracing is env-driven by LangChain.
+    We only validate and log startup status here for easier ops debugging.
+    """
+    tracing = os.getenv("LANGSMITH_TRACING", "").lower() in ("1", "true", "yes")
+    if not tracing:
+        logger.info("langsmith status=disabled")
+        return
+
+    api_key = (os.getenv("LANGSMITH_API_KEY") or "").strip()
+    endpoint = (os.getenv("LANGSMITH_ENDPOINT") or "https://api.smith.langchain.com").strip()
+    project = (os.getenv("LANGSMITH_PROJECT") or "enterprise-rag-local").strip()
+
+    if not api_key:
+        logger.warning("langsmith status=misconfigured reason=missing_api_key")
+        return
+
+    logger.info(
+        "langsmith status=enabled endpoint=%s project=%s",
+        endpoint,
+        project,
+    )
+
+
+def langsmith_state() -> dict[str, Any]:
+    tracing = os.getenv("LANGSMITH_TRACING", "").lower() in ("1", "true", "yes")
+    api_key_present = bool((os.getenv("LANGSMITH_API_KEY") or "").strip())
+    endpoint = (os.getenv("LANGSMITH_ENDPOINT") or "https://api.smith.langchain.com").strip()
+    project = (os.getenv("LANGSMITH_PROJECT") or "enterprise-rag-local").strip()
+
+    if not tracing:
+        status = "disabled"
+    elif tracing and not api_key_present:
+        status = "misconfigured"
+    else:
+        status = "enabled"
+
+    return {
+        "status": status,
+        "tracing": tracing,
+        "api_key_present": api_key_present,
+        "project": project,
+        "endpoint": endpoint,
+    }
 
 
 def index_readiness(chroma_dir: Path | None = None, bm25_dir: Path | None = None) -> dict[str, Any]:
@@ -110,9 +160,109 @@ def prometheus_metrics_body() -> tuple[bytes, str]:
     return generate_latest(), CONTENT_TYPE_LATEST
 
 
+def setup_langfuse() -> None:
+    """
+    Langfuse tracing uses per-request CallbackHandlers built by get_langfuse_callbacks().
+    We only validate config at startup and log the effective status.
+    """
+    tracing = os.getenv("LANGFUSE_TRACING", "").lower() in ("1", "true", "yes")
+    if not tracing:
+        logger.info("langfuse status=disabled")
+        return
+
+    public_key = (os.getenv("LANGFUSE_PUBLIC_KEY") or "").strip()
+    secret_key = (os.getenv("LANGFUSE_SECRET_KEY") or "").strip()
+    host = (os.getenv("LANGFUSE_HOST") or "http://localhost:3000").strip()
+
+    if not public_key or not secret_key:
+        logger.warning(
+            "langfuse status=misconfigured reason=missing_keys host=%s -- "
+            "create an account at %s, copy the project API keys, and set "
+            "LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY",
+            host,
+            host,
+        )
+        return
+
+    logger.info("langfuse status=enabled host=%s", host)
+
+
+def langfuse_state() -> dict[str, Any]:
+    tracing = os.getenv("LANGFUSE_TRACING", "").lower() in ("1", "true", "yes")
+    public_key_present = bool((os.getenv("LANGFUSE_PUBLIC_KEY") or "").strip())
+    secret_key_present = bool((os.getenv("LANGFUSE_SECRET_KEY") or "").strip())
+    host = (os.getenv("LANGFUSE_HOST") or "http://localhost:3000").strip()
+
+    if not tracing:
+        status = "disabled"
+    elif not (public_key_present and secret_key_present):
+        status = "misconfigured"
+    else:
+        status = "enabled"
+
+    return {
+        "status": status,
+        "tracing": tracing,
+        "public_key_present": public_key_present,
+        "secret_key_present": secret_key_present,
+        "host": host,
+    }
+
+
+def _langfuse_trace_id_from_request_id(request_id: str) -> str:
+    # Langfuse accepts custom trace IDs; use a stable 32-char, lowercase hex shape.
+    return request_id.replace("-", "").lower()[:32]
+
+
+def get_langfuse_callbacks(request_id: str | None = None) -> tuple[list, str | None]:
+    """Return (callbacks, trace_id). trace_id is set when request_id is provided and tracing is enabled."""
+    tracing = os.getenv("LANGFUSE_TRACING", "").lower() in ("1", "true", "yes")
+    if not tracing:
+        return [], None
+
+    public_key = (os.getenv("LANGFUSE_PUBLIC_KEY") or "").strip()
+    secret_key = (os.getenv("LANGFUSE_SECRET_KEY") or "").strip()
+    host = (os.getenv("LANGFUSE_HOST") or "http://localhost:3000").strip()
+
+    if not public_key or not secret_key:
+        return [], None
+
+    try:
+        stateful_client = None
+        trace_id: str | None = None
+
+        if request_id:
+            from langfuse import Langfuse  # type: ignore[import]
+
+            trace_id = _langfuse_trace_id_from_request_id(request_id)
+            lf = Langfuse(public_key=public_key, secret_key=secret_key, host=host)
+            stateful_client = lf.trace(
+                id=trace_id,
+                name="enterprise-rag-ask",
+                metadata={"request_id": request_id},
+            )
+
+        from langfuse.callback import CallbackHandler  # type: ignore[import]
+
+        return [
+            CallbackHandler(
+                public_key=public_key,
+                secret_key=secret_key,
+                host=host,
+                stateful_client=stateful_client,
+                session_id=request_id,
+                trace_name="enterprise-rag-ask",
+            )
+        ], trace_id
+    except ImportError:
+        logger.warning("langfuse callback: import failed — run: pip install 'langfuse<3'")
+        return [], None
+
+
 def log_ask_event(
     *,
     request_id: str,
+    langfuse_trace_id: str | None,
     duration_s: float,
     outcome: str,
     error_code: str | None,
@@ -124,5 +274,5 @@ def log_ask_event(
         duration_s,
         error_code or "",
         question_preview[:200],
-        extra={"request_id": request_id},
+        extra={"request_id": request_id, "langfuse_trace_id": langfuse_trace_id},
     )

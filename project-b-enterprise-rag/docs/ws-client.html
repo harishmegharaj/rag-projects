@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Enterprise RAG WebSocket Client</title>
+    <style>
+      :root {
+        --bg: #f4f7fb;
+        --panel: #ffffff;
+        --text: #142033;
+        --muted: #5b697d;
+        --line: #d8e1ee;
+        --accent: #0f6fff;
+        --good: #157a3d;
+        --warn: #b45600;
+        --bad: #b42318;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Segoe UI", Tahoma, sans-serif;
+        background: linear-gradient(180deg, #f6f9ff 0%, #eef3fb 100%);
+        color: var(--text);
+      }
+
+      .wrap {
+        max-width: 980px;
+        margin: 24px auto;
+        padding: 0 16px;
+      }
+
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 16px;
+        box-shadow: 0 6px 18px rgba(8, 33, 71, 0.08);
+      }
+
+      h1 {
+        margin: 0 0 16px;
+        font-size: 22px;
+      }
+
+      .grid {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: 1fr;
+      }
+
+      @media (min-width: 840px) {
+        .grid {
+          grid-template-columns: 2fr 1fr;
+        }
+      }
+
+      label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      input,
+      textarea,
+      button {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px 12px;
+        font: inherit;
+      }
+
+      textarea {
+        min-height: 120px;
+        resize: vertical;
+      }
+
+      .row {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: 1fr;
+        margin-top: 10px;
+      }
+
+      @media (min-width: 840px) {
+        .row {
+          grid-template-columns: repeat(3, 1fr);
+        }
+      }
+
+      button {
+        background: var(--accent);
+        color: #fff;
+        border: none;
+        cursor: pointer;
+      }
+
+      button[disabled] {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      #disconnectBtn {
+        background: #677489;
+      }
+
+      #clearBtn {
+        background: #2f3d52;
+      }
+
+      .status {
+        margin: 12px 0 0;
+        font-size: 14px;
+      }
+
+      .status b {
+        padding: 3px 8px;
+        border-radius: 999px;
+        color: #fff;
+      }
+
+      .s-disconnected b {
+        background: var(--bad);
+      }
+
+      .s-connecting b {
+        background: var(--warn);
+      }
+
+      .s-connected b {
+        background: var(--good);
+      }
+
+      .log {
+        margin-top: 12px;
+        background: #0d1b2a;
+        color: #e2ebf7;
+        border-radius: 8px;
+        padding: 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 360px;
+        overflow: auto;
+      }
+
+      .hint {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>Enterprise RAG WebSocket E2E Client</h1>
+        <p class="hint">
+          Connect to /v1/ws/ask, send a question, and inspect ack/status/final events.
+        </p>
+
+        <div class="grid">
+          <div>
+            <label for="wsUrl">WebSocket URL</label>
+            <input id="wsUrl" value="ws://127.0.0.1:8000/v1/ws/ask" />
+          </div>
+          <div>
+            <label for="apiKey">API key (optional)</label>
+            <input id="apiKey" placeholder="If API_KEY is enabled" />
+          </div>
+        </div>
+
+        <div style="margin-top: 10px;">
+          <label for="question">Question</label>
+          <textarea id="question">What topics are in the docs?</textarea>
+        </div>
+
+        <div class="row">
+          <button id="connectBtn" type="button">Connect</button>
+          <button id="sendBtn" type="button" disabled>Send Question</button>
+          <button id="disconnectBtn" type="button" disabled>Disconnect</button>
+        </div>
+
+        <div class="row">
+          <button id="clearBtn" type="button">Clear Log</button>
+        </div>
+
+        <div id="status" class="status s-disconnected">
+          Status: <b>disconnected</b>
+        </div>
+
+        <div id="log" class="log"></div>
+      </div>
+    </div>
+
+    <script>
+      let ws = null;
+      const $ = (id) => document.getElementById(id);
+
+      const el = {
+        wsUrl: $("wsUrl"),
+        apiKey: $("apiKey"),
+        question: $("question"),
+        connectBtn: $("connectBtn"),
+        sendBtn: $("sendBtn"),
+        disconnectBtn: $("disconnectBtn"),
+        clearBtn: $("clearBtn"),
+        status: $("status"),
+        log: $("log"),
+      };
+
+      function logLine(text) {
+        const stamp = new Date().toISOString().replace("T", " ").slice(0, 19);
+        el.log.textContent += `[${stamp}] ${text}\n`;
+        el.log.scrollTop = el.log.scrollHeight;
+      }
+
+      function setStatus(state) {
+        el.status.className = `status s-${state}`;
+        el.status.innerHTML = `Status: <b>${state}</b>`;
+      }
+
+      function withApiKey(url, apiKey) {
+        if (!apiKey) return url;
+        const sep = url.includes("?") ? "&" : "?";
+        return `${url}${sep}api_key=${encodeURIComponent(apiKey)}`;
+      }
+
+      function setButtonState() {
+        const connected = ws && ws.readyState === WebSocket.OPEN;
+        const connecting = ws && ws.readyState === WebSocket.CONNECTING;
+        el.connectBtn.disabled = connected || connecting;
+        el.sendBtn.disabled = !connected;
+        el.disconnectBtn.disabled = !connected && !connecting;
+      }
+
+      function connect() {
+        if (ws) return;
+
+        const baseUrl = el.wsUrl.value.trim();
+        const apiKey = el.apiKey.value.trim();
+        const url = withApiKey(baseUrl, apiKey);
+
+        if (!url) {
+          logLine("ERROR missing websocket URL");
+          return;
+        }
+
+        setStatus("connecting");
+        logLine(`CONNECT ${url}`);
+
+        ws = new WebSocket(url);
+        setButtonState();
+
+        ws.onopen = () => {
+          setStatus("connected");
+          setButtonState();
+          logLine("CONNECTED");
+        };
+
+        ws.onmessage = (event) => {
+          logLine(`RECV ${event.data}`);
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "final" && data.answer) {
+              logLine("ANSWER");
+              logLine(String(data.answer));
+            }
+          } catch {
+            // keep raw logs only
+          }
+        };
+
+        ws.onerror = () => {
+          logLine("ERROR websocket transport error");
+        };
+
+        ws.onclose = (event) => {
+          logLine(`CLOSED code=${event.code} reason=${event.reason || "-"}`);
+          ws = null;
+          setStatus("disconnected");
+          setButtonState();
+        };
+      }
+
+      function sendQuestion() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          logLine("ERROR websocket is not connected");
+          return;
+        }
+
+        const question = el.question.value.trim();
+        if (!question) {
+          logLine("ERROR question is empty");
+          return;
+        }
+
+        const payload = { question };
+        ws.send(JSON.stringify(payload));
+        logLine(`SEND ${JSON.stringify(payload)}`);
+      }
+
+      function disconnect() {
+        if (!ws) return;
+        ws.close(1000, "client closed");
+      }
+
+      el.connectBtn.addEventListener("click", connect);
+      el.sendBtn.addEventListener("click", sendQuestion);
+      el.disconnectBtn.addEventListener("click", disconnect);
+      el.clearBtn.addEventListener("click", () => {
+        el.log.textContent = "";
+      });
+
+      setButtonState();
+      setStatus("disconnected");
+      logLine("Ready");
+    </script>
+  </body>
+</html>

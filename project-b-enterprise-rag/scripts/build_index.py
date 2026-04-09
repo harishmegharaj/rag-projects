@@ -11,15 +11,15 @@ from src.index_builder import rebuild_index
 
 def main():
     raw = documents_raw_dir()
-    if not any(p.is_file() for p in raw.rglob("*") if p.name != ".gitkeep"):
-        print(f"Add PDF or Markdown files under {raw} first (or use the upload API).")
-        sys.exit(1)
     try:
         out = rebuild_index(raw)
     except ValueError as e:
         print(e)
         sys.exit(1)
-    print(f"Ingested {out['chunk_count']} chunks.")
+    print(
+        f"Ingested {out['chunk_count']} chunks "
+        f"(files={out['file_chunk_count']}, sql={out['sql_chunk_count']}, sql_rows={out['sql_row_count']})."
+    )
     print(f"Chroma → {out['chroma_dir']}\nBM25 + chunks → {out['bm25_dir']}")
 
 

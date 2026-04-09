@@ -36,6 +36,7 @@ def run_pipeline(
     vector_k: int = 20,
     fusion_top_n: int = 15,
     rerank_top_n: int = 5,
+    callbacks: list | None = None,
 ) -> dict[str, Any]:
     logger.info("retrieval.query=%s", redact_pii(question)[:200])
     out = run_langchain_pipeline(
@@ -46,6 +47,7 @@ def run_pipeline(
         vector_k=vector_k,
         fusion_top_n=fusion_top_n,
         rerank_top_n=rerank_top_n,
+        callbacks=callbacks,
     )
     answer = out["answer"]
     top = out["retrieved"]

@@ -6,23 +6,30 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile, WebSocket
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.websockets import WebSocketDisconnect
 
 from .config import api_key as config_api_key
 from .config import bm25_index_dir, chroma_persist_dir, documents_raw_dir
-from .index_builder import rebuild_index
+from .config import sql_database_url, sql_sync_query
+from .index_builder import rebuild_index, sync_sql_incremental
 from .observability import (
     build_id,
+    get_langfuse_callbacks,
     index_readiness,
+    langfuse_state,
+    langsmith_state,
     log_ask_event,
     metrics_require_auth,
     prometheus_metrics_body,
     record_ask,
     record_rebuild,
     service_version,
+    setup_langfuse,
+    setup_langsmith,
     setup_logging,
 )
 from .rag_pipeline import debug_json, run_pipeline
@@ -54,6 +61,23 @@ async def verify_api_key(
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
+def verify_ws_api_key(websocket: WebSocket) -> bool:
+    expected = config_api_key()
+    if not expected:
+        return True
+
+    token: str | None = websocket.headers.get("x-api-key")
+    if token:
+        token = token.strip()
+    if not token:
+        auth = websocket.headers.get("authorization")
+        if auth and auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    if not token:
+        token = (websocket.query_params.get("api_key") or "").strip() or None
+    return token == expected
+
+
 class RequestIDMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
         rid = request.headers.get("x-request-id") or str(uuid.uuid4())
@@ -69,6 +93,8 @@ app = FastAPI(title="Enterprise RAG", version=service_version())
 @app.on_event("startup")
 def _startup() -> None:
     setup_logging()
+    setup_langsmith()
+    setup_langfuse()
 
 
 app.add_middleware(RequestIDMiddleware)
@@ -117,6 +143,16 @@ async def paths(_: None = Depends(verify_api_key)) -> dict:
         "documents_raw_dir": str(documents_raw_dir()),
         "chroma_persist_dir": str(chroma_persist_dir()),
         "bm25_index_dir": str(bm25_index_dir()),
+        "sql_enabled": bool(sql_database_url()),
+        "sql_sync_query": sql_sync_query(),
+    }
+
+
+@app.get("/v1/config/tracing")
+async def tracing_config(_: None = Depends(verify_api_key)) -> dict:
+    return {
+        "langsmith": langsmith_state(),
+        "langfuse": langfuse_state(),
     }
 
 
@@ -155,16 +191,22 @@ def _ask_outcome(out: dict) -> str:
     return "ok"
 
 
+async def _ws_send(websocket: WebSocket, payload: dict) -> None:
+    await websocket.send_json(payload)
+
+
 @app.post("/v1/ask")
 async def ask(body: AskBody, request: Request, _: None = Depends(verify_api_key)):
     rid = getattr(request.state, "request_id", "-")
+    callbacks, langfuse_trace_id = get_langfuse_callbacks(request_id=rid)
     t0 = time.perf_counter()
-    out = run_pipeline(body.question.strip(), chroma_persist_dir(), bm25_index_dir())
+    out = run_pipeline(body.question.strip(), chroma_persist_dir(), bm25_index_dir(), callbacks=callbacks)
     duration = time.perf_counter() - t0
     outcome = _ask_outcome(out)
     record_ask(duration, outcome)
     log_ask_event(
         request_id=rid,
+        langfuse_trace_id=langfuse_trace_id,
         duration_s=duration,
         outcome=outcome,
         error_code=out.get("error_code"),
@@ -176,10 +218,73 @@ async def ask(body: AskBody, request: Request, _: None = Depends(verify_api_key)
     return body_out
 
 
+@app.websocket("/v1/ws/ask")
+async def ask_ws(websocket: WebSocket) -> None:
+    if not verify_ws_api_key(websocket):
+        await websocket.close(code=1008, reason="Invalid or missing API key")
+        return
+
+    await websocket.accept()
+    rid = websocket.headers.get("x-request-id") or str(uuid.uuid4())
+    await _ws_send(websocket, {"type": "ack", "request_id": rid})
+
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            question = str(msg.get("question", "")).strip()
+            if not question:
+                await _ws_send(
+                    websocket,
+                    {
+                        "type": "error",
+                        "request_id": rid,
+                        "error": "question is required",
+                        "max_length": 8000,
+                    },
+                )
+                continue
+            if len(question) > 8000:
+                await _ws_send(
+                    websocket,
+                    {
+                        "type": "error",
+                        "request_id": rid,
+                        "error": "question exceeds max_length",
+                        "max_length": 8000,
+                    },
+                )
+                continue
+
+            callbacks, langfuse_trace_id = get_langfuse_callbacks(request_id=rid)
+            t0 = time.perf_counter()
+            await _ws_send(websocket, {"type": "status", "request_id": rid, "stage": "retrieval_started"})
+            out = run_pipeline(question, chroma_persist_dir(), bm25_index_dir(), callbacks=callbacks)
+            await _ws_send(websocket, {"type": "status", "request_id": rid, "stage": "retrieval_finished"})
+
+            duration = time.perf_counter() - t0
+            outcome = _ask_outcome(out)
+            record_ask(duration, outcome)
+            log_ask_event(
+                request_id=rid,
+                langfuse_trace_id=langfuse_trace_id,
+                duration_s=duration,
+                outcome=outcome,
+                error_code=out.get("error_code"),
+                question_preview=question,
+            )
+
+            payload = _ask_payload(out, rid)
+            payload["type"] = "final"
+            await _ws_send(websocket, payload)
+    except WebSocketDisconnect:
+        return
+
+
 @app.post("/v1/documents")
 async def upload_documents(
     files: list[UploadFile] = File(...),
     rebuild: bool = Query(True, description="Run full reindex after saving uploads"),
+    include_sql: bool = Query(True, description="Include SQL rows (if configured) in reindex"),
     _: None = Depends(verify_api_key),
 ) -> dict:
     if not files:
@@ -212,7 +317,7 @@ async def upload_documents(
     if rebuild:
         t0 = time.perf_counter()
         try:
-            built = rebuild_index(dest)
+            built = rebuild_index(dest, include_sql=include_sql)
             result["index"] = dict(built)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
@@ -224,11 +329,39 @@ async def upload_documents(
 
 
 @app.post("/v1/index/rebuild")
-async def index_rebuild(_: None = Depends(verify_api_key)) -> dict:
+async def index_rebuild(
+    include_sql: bool = Query(True, description="Include SQL rows (if configured)"),
+    _: None = Depends(verify_api_key),
+) -> dict:
     t0 = time.perf_counter()
     try:
-        built = rebuild_index()
+        built = rebuild_index(include_sql=include_sql)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     record_rebuild(time.perf_counter() - t0)
     return {"index": dict(built)}
+
+
+@app.post("/v1/db/sync")
+async def db_sync(
+    mode: str = Query("incremental", description="Sync mode: incremental or full"),
+    _: None = Depends(verify_api_key),
+) -> dict:
+    """Live-pull SQL rows and sync index with DB data."""
+    t0 = time.perf_counter()
+    try:
+        m = mode.strip().lower()
+        if m == "incremental":
+            built = sync_sql_incremental()
+        elif m == "full":
+            built = rebuild_index(include_sql=True, require_sql=True)
+        else:
+            raise HTTPException(status_code=400, detail="mode must be 'incremental' or 'full'")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    record_rebuild(time.perf_counter() - t0)
+    return {
+        "synced": True,
+        "index": dict(built),
+        "note": "SQL rows were synced at request time.",
+    }

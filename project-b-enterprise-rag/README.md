@@ -28,7 +28,8 @@ End-to-end story in three layers: **(1) corpus on disk**, **(2) full reindex** i
 | Stage            | What happens                                                                                                                             | Entry points                                                                                                        |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **Corpus**       | PDF/Markdown files accumulate under `**DOCUMENTS_RAW_DIR`** (default `data/raw/`).                                                       | Manual copy; `**POST /v1/documents**` (`src/api.py`) saves uploads with unique names.                               |
-| **Reindex**      | Every file in the corpus is chunked, embedded into Chroma, and BM25 + `chunks.json` are rebuilt (**full refresh**, not incremental).     | `**python scripts/build_index.py`**; `**POST /v1/documents?rebuild=true**` (default); `**POST /v1/index/rebuild**`. |
+| **DB sync**      | Optional live pull from SQL (`**SQL_DATABASE_URL**` + `**SQL_SYNC_QUERY**`) is converted to chunks and merged during reindex.            | `**POST /v1/db/sync**`; `**POST /v1/index/rebuild?include_sql=true**`; `**POST /v1/documents?include_sql=true**`.   |
+| **Reindex**      | File chunks + optional SQL chunks are embedded into Chroma, and BM25 + `chunks.json` are rebuilt (**full refresh**, not incremental).     | `**python scripts/build_index.py`**; `**POST /v1/documents?rebuild=true**` (default); `**POST /v1/index/rebuild**`. |
 | **Storage**      | Vectors: `**CHROMA_PERSIST_DIR`** (collection `enterprise_rag`). Lexical: `**BM25_INDEX_DIR**` (`bm25.pkl` + `chunks.json`).             | Env overrides; see **Configuration**.                                                                               |
 | **Query**        | LangChain orchestration: guardrails → hybrid (BM25 + vector + RRF) → cross-encoder rerank → branch to blocked/no-context/error/generate. | `**python scripts/ask.py`**; `**POST /v1/ask**` (JSON `question`).                                                  |
 | **Query (agent)** | LangGraph **ReAct** loop: the model may call **tools** (search / math / HTTP) zero or more times, then answers. Same indexes as **Query**; different entrypoint and cost profile. | `**python scripts/agent_ask.py "…"**` only (no HTTP route). Needs `**OPENAI_API_KEY**`. See **ReAct tool agent** below. |
@@ -256,6 +257,11 @@ Copy `.env.example` → `.env`:
 - `**OPENAI_API_KEY**` — enables full answers; without it, `rag_pipeline` returns a stub plus the top reranked chunk preview. **Required** for `**scripts/agent_ask.py**` (the ReAct agent does not run in stub mode).
 - `**OPENAI_CHAT_MODEL**` — defaults to `gpt-4o-mini` (used by both the fixed pipeline and the agent).
 - `**AGENT_HTTP_ALLOWLIST**` — comma-separated hostnames the **`fetch_internal_http`** tool may call (default `**127.0.0.1,localhost**`). Only relevant when using **`agent_ask.py`**.
+- `**SQL_DATABASE_URL**` — SQLAlchemy database URL for live sync (examples: `sqlite:///./data/app.db`, `postgresql+psycopg://user:pass@host:5432/db`).
+- `**SQL_SYNC_QUERY**` — read query used for sync (must start with `SELECT` or `WITH`; default `SELECT * FROM documents`).
+- `**SQL_ID_COLUMN**`, `**SQL_UPDATED_AT_COLUMN**`, `**SQL_SOURCE_NAME**`, `**SQL_TEXT_COLUMNS**` — optional row-to-chunk mapping controls (`SQL_TEXT_COLUMNS` is comma-separated).
+
+`POST /v1/db/sync?mode=incremental` tracks a watermark in `vector_store/bm25/sql_sync_state.json` (or your `BM25_INDEX_DIR`) and pulls rows where `SQL_UPDATED_AT_COLUMN > last_synced_updated_at`. Keep `SQL_UPDATED_AT_COLUMN` monotonic for reliable incremental sync.
 
 Tuning `bm25_k`, `vector_k`, `fusion_top_n`, and `rerank_top_n` is done in code today (`run_pipeline` / `hybrid_retrieve`); you can extend `config.py` or `ask.py` to read them from the environment if you want.
 
@@ -333,9 +339,147 @@ The **FastAPI** app lets you **upload PDF/Markdown files** and **rebuild the ind
 | `GET /metrics`           | Optional         | Prometheus scrape. Set `**METRICS_REQUIRE_AUTH=1`** to require `**API_KEY**`.                                                                                                                                            |
 | `GET /v1/version`        | If `API_KEY` set | Service name, version, `**build_id**` (for deploy tracing).                                                                                                                                                              |
 | `GET /v1/config/paths`   | If `API_KEY` set | Shows corpus and index directories (for debugging).                                                                                                                                                                      |
-| `POST /v1/documents`     | If `API_KEY` set | Multipart upload: one or more `.pdf` / `.md` files saved under `**DOCUMENTS_RAW_DIR**` (default `data/raw/`). Query `rebuild=false` to only save files; default `**rebuild=true**` runs a **full reindex** after upload. |
-| `POST /v1/index/rebuild` | If `API_KEY` set | Full reindex from whatever is already on disk in the corpus dir.                                                                                                                                                         |
+| `GET /v1/config/tracing` | If `API_KEY` set | Shows LangSmith and Langfuse tracing status (`disabled` / `misconfigured` / `enabled`) and non-secret config checks.                                                                                                   |
+| `POST /v1/documents`     | If `API_KEY` set | Multipart upload: one or more `.pdf` / `.md` files saved under `**DOCUMENTS_RAW_DIR**`. Query `rebuild=false` to only save files. Query `include_sql=false` to skip DB rows during the upload-triggered rebuild.         |
+| `POST /v1/index/rebuild` | If `API_KEY` set | Full reindex from corpus dir; `include_sql=true` (default) also merges live SQL rows when DB is configured.                                                                                                             |
+| `POST /v1/db/sync`       | If `API_KEY` set | Live SQL sync. `mode=incremental` (default) upserts changed rows only; `mode=full` does full rebuild with files + DB rows.                                                                                              |
 | `POST /v1/ask`           | If `API_KEY` set | JSON `{"question": "..."}` → answer + flags + `**request_id`**; **503** if the LLM/index path failed (see **No answer / errors** below).                                                                                 |
+| `WS /v1/ws/ask`          | If `API_KEY` set | WebSocket ask flow. Send `{"question":"..."}` and receive `ack` → `status` (`retrieval_started`, `retrieval_finished`) → `final` payload (same shape as `/v1/ask`, plus `type`).                                      |
+
+### Log monitoring (recommended)
+
+Use JSON logs + a watcher so you can filter `ask_complete` events by outcome/latency quickly.
+
+```bash
+# 1) Start API with JSON logs and save to file
+LOG_JSON=1 ./.venv/bin/python scripts/serve.py 2>&1 | tee logs/server.jsonl
+
+# 2) In another terminal, monitor only ask completion events
+python scripts/watch_logs.py --file logs/server.jsonl --follow --event ask_complete
+
+# 3) Trigger a use case (HTTP)
+curl -s -X POST http://127.0.0.1:8000/v1/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Summarize the main topics"}'
+
+# optional sanity check for config status
+curl -s http://127.0.0.1:8000/v1/config/tracing
+```
+
+You can also monitor raw logs with shell tools:
+
+```bash
+tail -f logs/server.jsonl | python scripts/watch_logs.py --event ask_complete
+```
+
+### LangSmith tracing (cloud-hosted)
+
+Project B already uses LangChain/LangGraph, so LangSmith integrates with env config.
+
+```bash
+# 1) in .env (or export in shell)
+export LANGSMITH_TRACING=true
+export LANGSMITH_API_KEY=lsv2_xxx
+export LANGSMITH_PROJECT=enterprise-rag-local
+# optional:
+# export LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+
+# 2) start API
+LOG_JSON=1 ./.venv/bin/python scripts/serve.py
+
+# 3) trigger HTTP flow
+curl -s -X POST http://127.0.0.1:8000/v1/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Summarize the main topics"}'
+
+# 4) trigger WebSocket flow
+python scripts/ws_ask.py "What topics are in the docs?" --show-debug
+```
+
+You should see traces in LangSmith for retrieval/rerank/generation runs.
+
+Robust local start command (avoids cwd/venv path issues):
+
+```bash
+cd project-b-enterprise-rag
+# If LANGSMITH_* values are in .env, they are auto-loaded by the launcher.
+# Explicit exports still override .env.
+PORT=8000 ./scripts/serve_langsmith.sh
+```
+
+---
+
+### Langfuse tracing (fully local — no cloud required)
+
+[Langfuse](https://langfuse.com/docs/deployment/self-host) self-hosts in Docker with just PostgreSQL.
+Per-request `CallbackHandler` spans are automatically attached to every `/v1/ask` and `/v1/ws/ask` call.
+
+#### Step 1 — Start the Langfuse stack
+
+```bash
+cd project-b-enterprise-rag
+docker compose -f docker-compose.langfuse.yml up -d
+# First boot pulls images and runs migrations; takes ~30 s
+docker compose -f docker-compose.langfuse.yml logs -f langfuse
+# Ready when you see: ✓ ready started server on 0.0.0.0:3000
+```
+
+Open <http://localhost:3000> → **Sign up** → create a project → **Settings → API keys** → copy `pk-lf-…` and `sk-lf-…`.
+
+#### Step 2 — Start the RAG API with tracing
+
+```bash
+# Put the keys in .env, then run:
+PORT=8000 ./scripts/serve_langfuse.sh
+```
+
+Explicit shell exports still work and override `.env` when needed.
+
+Startup log should confirm:
+
+```
+langfuse status=enabled host=http://localhost:3000
+```
+
+#### Step 3 — Trigger traces
+
+```bash
+# HTTP ask
+curl -s -X POST http://127.0.0.1:8000/v1/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Summarize the main topics"}'
+
+# Or WebSocket ask
+python scripts/ws_ask.py "What topics are in the docs?" --show-debug
+```
+
+Open <http://localhost:3000> → **Traces** — each ask becomes one span tree showing guardrails → retrieval → rerank → LLM generation.
+
+Each `ask_complete` JSON log now includes `langfuse_trace_id` (derived from `request_id`) so logs and traces can be correlated quickly.
+
+#### Check tracing status via API
+
+```bash
+curl -s http://127.0.0.1:8000/v1/config/tracing | python -m json.tool
+```
+
+Expected when fully configured:
+
+```json
+{
+  "langsmith": {"status": "disabled", ...},
+  "langfuse": {"status": "enabled", "tracing": true, "public_key_present": true, "secret_key_present": true, "host": "http://localhost:3000"}
+}
+```
+
+#### Tear down
+
+```bash
+docker compose -f docker-compose.langfuse.yml down          # keep data
+docker compose -f docker-compose.langfuse.yml down -v       # wipe data
+```
+
+---
 
 
 If `**API_KEY`** is set in `.env`, protected routes require header `**X-API-Key: <key>**` or `**Authorization: Bearer <key>**`. If unset, all routes are open (fine for local dev only).
@@ -347,11 +491,50 @@ python scripts/serve.py
 # or: uvicorn src.api:app --host 0.0.0.0 --port 8000
 ```
 
+**WebSocket E2E check (CLI):**
+
+```bash
+python scripts/ws_ask.py "What topics are in the docs?" --show-debug
+# if API_KEY is set:
+python scripts/ws_ask.py "What topics are in the docs?" --api-key "$API_KEY" --show-debug
+```
+
+**WebSocket E2E check (browser UI):**
+
+```bash
+# from project root
+python -m http.server 9001
+# open: http://127.0.0.1:9001/docs/ws-client.html
+```
+
+In the page:
+
+1. Keep URL as `ws://127.0.0.1:8000/v1/ws/ask`.
+2. Paste API key only if `API_KEY` is enabled.
+3. Click **Connect** then **Send Question**.
+4. Inspect event order in the log: `ack` -> `status` -> `final`.
+
+**WebSocket example (Python):**
+
+```python
+import json
+import websocket
+
+ws = websocket.create_connection("ws://127.0.0.1:8000/v1/ws/ask")
+print(ws.recv())  # ack
+ws.send(json.dumps({"question": "What topics are in the docs?"}))
+print(ws.recv())  # status: retrieval_started
+print(ws.recv())  # status: retrieval_finished
+print(ws.recv())  # final payload
+ws.close()
+```
+
 **Example (upload + reindex + ask):**
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8000/v1/documents" \
   -F "files=@./data/raw/SAMPLE.md"
+curl -s -X POST "http://127.0.0.1:8000/v1/db/sync?mode=incremental"
 curl -s -X POST "http://127.0.0.1:8000/v1/ask" \
   -H "Content-Type: application/json" \
   -d '{"question":"What topics are in the docs?"}'
