@@ -48,17 +48,33 @@ flowchart TB
     UP --> DR
   end
 
-  subgraph idx ["2. Full reindex — index_builder.rebuild_index"]
-    TR["Trigger:\nbuild_index.py\nPOST /v1/index/rebuild\nPOST /v1/documents\n(rebuild=true default)"]
-    DR --> TR
-    TR --> IB["index_builder.py"]
-    IB --> ING["ingest.py\nchunks + metadata"]
-    ING --> EMB["embed_store.py\nSentenceTransformer"]
-    EMB --> CH[("Chroma\nenterprise_rag")]
-    ING --> BM["bm25_index.py\nbm25.pkl + chunks.json"]
+  subgraph sql ["2. Optional SQL source"]
+    DB["SQL database\n(SQL_DATABASE_URL)"]
+    SQ["SQL_SYNC_QUERY\nSELECT / WITH"]
+    DB --> SQ
   end
 
-  subgraph q ["3. Query — rag_pipeline.run_pipeline"]
+  subgraph idx ["3. Index build + sync"]
+    TR["Triggers:\nbuild_index.py\nPOST /v1/index/rebuild\nPOST /v1/documents\n(rebuild=true default)\nPOST /v1/db/sync\n(mode=full|incremental)"]
+    DR --> TR
+    SQ --> TR
+
+    TR --> IB["index_builder.py\nrebuild_index / sync_sql_incremental"]
+
+    IB --> ING["ingest.py\nfile chunks + metadata"]
+    IB --> SING["sql_ingest.py\nSQL row chunks"]
+
+    ING --> MERGE["merge chunk sets"]
+    SING --> MERGE
+
+    MERGE --> EMB["embed_store.py\nSentenceTransformer"]
+    EMB --> CH[("Chroma\nenterprise_rag")]
+    MERGE --> BM["bm25_index.py\nbm25.pkl + chunks.json"]
+
+    IB --> WM["sql_sync_state.json\nwatermark for incremental sync"]
+  end
+
+  subgraph q ["4. Query — rag_pipeline.run_pipeline"]
     A1["CLI: scripts/ask.py"]
     A2["API: POST /v1/ask"]
     A1 --> RP["rag_pipeline.py"]
